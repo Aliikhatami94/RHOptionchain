@@ -1,0 +1,8 @@
+mysql-connector
+pytz
+datetime
+flask
+pyotp
+robin_stocks
+configparser
+functions-framework
