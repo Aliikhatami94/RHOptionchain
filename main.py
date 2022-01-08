@@ -4,11 +4,16 @@ import pyotp
 import robin_stocks.robinhood as r
 import requests
 import random
+import pyspark as sp
+import time
+import dask
+import asyncio
+import aiohttp
 
-short_min_prob = 0.80
+short_min_prob = 0.75
 long_min_prob = 0.50
-minror = 3
-ticker = 'GOOGL'
+min_ror = 3
+ticker = 'BABA'
 
 #__________________________________
 
@@ -22,6 +27,7 @@ mydb = mysql.connect(
     database=config['SCALEGRID']['DB']
 )
 mycursor = mydb.cursor()
+
 #__________________________________
 
 class Tradier_endpoints:
@@ -40,40 +46,46 @@ class Tradier_endpoints:
         self.orderlink = config['REAL TRADIER']['ORDER_URL'] + self.accountid
         self.orderlink = self.accountid.format(config['REAL TRADIER']['ORDER_URL'])
 
-    def options_orders(self, symbol, side, optionsymbol, qty):
-        url = self.orderlink.format(self.baseurl)
-        option_response = requests.post(
-            url,
-            data={'class': 'option', 'symbol': str(symbol), 'option_symbol': str(optionsymbol),
-                  'side': str(side), 'quantity': str(qty), 'type': 'market', 'duration': 'day'},
-            headers={'Authorization': 'Bearer {}'.format(self.token),
-                     'Accept': 'application/json'}
-        )
-        return option_response.json()
+    async def options_orders(self, symbol, side, optionsymbol, qty):
+        async with aiohttp.ClientSession() as session:
+            url = self.orderlink.format(self.baseurl)
+            option_response = await session.post(
+                url,
+                data={'class': 'option', 'symbol': str(symbol), 'option_symbol': str(optionsymbol),
+                      'side': str(side), 'quantity': str(qty), 'type': 'market', 'duration': 'day'},
+                headers={'Authorization': 'Bearer {}'.format(self.token),
+                         'Accept': 'application/json'}
+            )
+            return await option_response.json()
 
-    def expiration_response(self, symbol):
-        url = self.expslink.format(self.baseurl)
-        exp_response = requests.get(
-            url,
-            params={'symbol': f'{symbol}', 'includeAllRoots': 'true', 'strikes': 'true'},
-            headers={'Authorization': 'Bearer {}'.format(self.token), 'Accept': 'application/json'}
-        )
-        return exp_response.json()
+    async def expiration_response(self, symbol):
+        async with aiohttp.ClientSession() as session:
+            url = self.expslink.format(self.baseurl)
+            exp_response = await session.get(
+                url,
+                params={'symbol': f'{symbol}','includeAllRoots': 'true', 'strikes': 'true'},
+                headers={'Authorization': 'Bearer {}'.format(self.token), 'Accept': 'application/json'},
+                ssl=False
+            )
+            return await exp_response.json()
 
-    def chains(self, symbol, exp):
-        url = self.optionslink.format(self.baseurl)
-        option_response = requests.get(
-            url,
-            params={'symbol': f'{symbol}', 'expiration': f'{exp}', 'greeks': 'true'},
-            headers={'Authorization': 'Bearer {}'.format(self.token),
-                     'Accept': 'application/json'}
-        )
-        return option_response.json()
+    async def chains(self, symbol, exp):
+        async with aiohttp.ClientSession() as session:
+            url = self.optionslink.format(self.baseurl)
+            option_response = await session.get(
+                url,
+                params={'symbol': f'{symbol}', 'expiration': f'{exp}', 'greeks': 'true'},
+                headers={'Authorization': 'Bearer {}'.format(self.token),
+                         'Accept': 'application/json'},
+                ssl=False
+            )
+            return await option_response.json()
+
 #__________________________________
 
-def option_symbol(symbol, exp, type, strike):
+async def optionchains(symbol, exp, type, strike):
     endpoint = Tradier_endpoints()
-    option_response = endpoint.chains(symbol, exp)
+    option_response = await endpoint.chains(symbol, exp)
     options = option_response['options']['option']
     for option in options:
         optiontype = option['option_type']
@@ -90,13 +102,12 @@ def quote(symbol):
 
 #-------------------------------#
 
-def longput(symbol):
-    end = Tradier_endpoints()
-    exp = Tradier_endpoints()
-    expirationfxn = exp.expiration_response(symbol)
+def longput(symbol=None):
+    endpoint = Tradier_endpoints()
+    expirationfxn = asyncio.run(endpoint.expiration_response(symbol))
     expirations = expirationfxn['expirations']['expiration']
 
-    lchain = []
+    longs = []
     for expiration in expirations:
         expiry = expiration['date']
         puts = r.options.find_options_by_specific_profitability(inputSymbols=symbol, optionType='put', expirationDate=expiry)
@@ -105,20 +116,19 @@ def longput(symbol):
             expiration = put['expiration_date']
             bid = round(float(put['bid_price']), 1)
             lpop = round(float(put['chance_of_profit_long']), 2)
-            ssymb = str(option_symbol(symbol, expiration, 'call', strike))
-            prem = bid * 100
+            ssymb = str(optionchains(symbol, expiration, 'call', strike))
             if lpop > long_min_prob:
-                lchain.append(ssymb)
-    symb = random.choice(lchain)
-    end.options_orders(symbol, 'buy_to_open', symb, 1)
+                longs.append(ssymb)
+    random_picks = random.choice(longs)
+    #endpoints.options_orders(symbol, 'buy_to_open', symb, 1)
 
 def shortput(symbol):
-    end = Tradier_endpoints()
-    exp = Tradier_endpoints()
-    expirationfxn = exp.expiration_response(symbol)
+    endpoint = Tradier_endpoints()
+    expirationfxn = asyncio.run(endpoint.expiration_response(symbol))
     expirations = expirationfxn['expirations']['expiration']
 
-    schain = []
+    shorts = []
+    start = time.time()
     for expiration in expirations:
         expiry = expiration['date']
         puts = r.options.find_options_by_specific_profitability(inputSymbols=symbol, optionType='put', expirationDate=expiry)
@@ -126,51 +136,59 @@ def shortput(symbol):
             strike = float(put['strike_price'])
             expiration = put['expiration_date']
             bid = round(float(put['bid_price']), 1)
-            lpop = round(float(put['chance_of_profit_long']), 2)
-            spop = round(float(put['chance_of_profit_short']), 2)
-            ssymb = str(option_symbol(symbol, expiration, 'call', strike))
+            prob = round(float(put['chance_of_profit_short']), 2)
+            optionchain = str(optionchains(symbol, expiration, 'call', strike))
             cost = quote(symbol) * 100
             prem = bid * 100
             ror = (prem / cost) * 100
-            if spop > short_min_prob:
-                if ror > minror:
-                    schain.append(ssymb)
-    symb = random.choice(schain)
-    end.options_orders(symbol, 'sell_to_open', symb, 1)
+            if prob > short_min_prob:
+                if ror > min_ror:
+                    shorts.append(optionchain)
+    graph = dask.delayed()(shorts)
+    computed_list = graph.compute()
+    random_pick = random.choice(computed_list)
+    print(random_pick)
+    end = time.time()
+    total = end - start
+    print(total)
 
 def shortcall(symbol):
-    end = Tradier_endpoints()
-    exp = Tradier_endpoints()
-    expirationfxn = exp.expiration_response(symbol)
+    endpoint = Tradier_endpoints()
+    expirationfxn = asyncio.run(endpoint.expiration_response(symbol))
     expirations = expirationfxn['expirations']['expiration']
 
-    schain = []
+    shorts = []
+    start = time.time()
     for expiration in expirations:
         expiry = expiration['date']
         calls = r.options.find_options_by_specific_profitability(inputSymbols=symbol, optionType='call', expirationDate=expiry)
+
         for call in calls:
             strike = float(call['strike_price'])
-            expiration = call['expiration_date']
+            exp = call['expiration_date']
             bid = round(float(call['bid_price']), 1)
-            lpop = round(float(call['chance_of_profit_long']), 2)
-            spop = round(float(call['chance_of_profit_short']), 2)
-            ssymb = str(option_symbol(symbol, expiration, 'call', strike))
+            prob = round(float(call['chance_of_profit_short']), 2)
+            optionchain = str(asyncio.run(optionchains(symbol, exp, 'call', strike)))
             cost = quote(symbol) * 100
-            prem = bid * 100
-            ror = (prem / cost) * 100
-            if spop > short_min_prob:
-                if ror > minror:
-                    schain.append(ssymb)
-    symb = random.choice(schain)
-    end.options_orders(symbol, 'sell_to_open', symb, 1)
+            premium = bid * 100
+            ror = (premium / cost) * 100
+            if prob > short_min_prob:
+                if ror > min_ror:
+                    shorts.append(optionchain)
+        graph = dask.delayed()(shorts)
+        computed_list = graph.compute()
+        print(computed_list)
+        end = time.time()
+        total = end - start
+        print(total)
+    #end.options_orders(symbol, 'sell_to_open', symb, 1)
 
 def longcall(symbol):
-    end = Tradier_endpoints()
-    exp = Tradier_endpoints()
-    expirationfxn = exp.expiration_response(symbol)
+    endpoint = Tradier_endpoints()
+    expirationfxn = asyncio.run(endpoint.expiration_response(symbol))
     expirations = expirationfxn['expirations']['expiration']
 
-    lchain = []
+    longs = []
     for expiration in expirations:
         expiry = expiration['date']
         calls = r.options.find_options_by_specific_profitability(inputSymbols=symbol, optionType='call', expirationDate=expiry)
@@ -179,12 +197,12 @@ def longcall(symbol):
             expiration = call['expiration_date']
             bid = round(float(call['bid_price']), 1)
             lpop = round(float(call['chance_of_profit_long']), 2)
-            ssymb = str(option_symbol(symbol, expiration, 'call', strike))
+            ssymb = str(optionchains(symbol, expiration, 'call', strike))
             prem = bid * 100
             if lpop > long_min_prob:
-                lchain.append(ssymb)
-    symb = random.choice(lchain)
-    end.options_orders(symbol, 'buy_to_open', symb, 1)
+                longs.append(ssymb)
+    random_picks = random.choice(longs)
+    #end.options_orders(symbol, 'buy_to_open', symb, 1)
 
 def profitable_options(symbol):
     longput(symbol)
@@ -192,4 +210,4 @@ def profitable_options(symbol):
     longcall(symbol)
     shortcall(symbol)
 
-profitable_options(ticker)
+shortcall(ticker)
