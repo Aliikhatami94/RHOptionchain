@@ -13,7 +13,9 @@ import aiohttp
 short_min_prob = 0.75
 long_min_prob = 0.50
 min_ror = 3
-ticker = 'BABA'
+ticker = 'AMD'
+
+#'AMD', 'PLUG', 'NVDA', 'SQ', 'BA'
 
 #__________________________________
 
@@ -113,13 +115,14 @@ def longput(symbol=None):
         puts = r.options.find_options_by_specific_profitability(inputSymbols=symbol, optionType='put', expirationDate=expiry)
         for put in puts:
             strike = float(put['strike_price'])
-            expiration = put['expiration_date']
+            exp = put['expiration_date']
             bid = round(float(put['bid_price']), 1)
             lpop = round(float(put['chance_of_profit_long']), 2)
-            ssymb = str(optionchains(symbol, expiration, 'call', strike))
+            ssymb = str(asyncio.run(optionchains(symbol, exp, 'call', strike)))
             if lpop > long_min_prob:
                 longs.append(ssymb)
-    random_picks = random.choice(longs)
+        print(longs)
+    #random_picks = random.choice(longs)
     #endpoints.options_orders(symbol, 'buy_to_open', symb, 1)
 
 def shortput(symbol):
@@ -128,29 +131,29 @@ def shortput(symbol):
     expirations = expirationfxn['expirations']['expiration']
 
     shorts = []
-    start = time.time()
+    totalstart = time.time()
     for expiration in expirations:
+        start = time.time()
         expiry = expiration['date']
         puts = r.options.find_options_by_specific_profitability(inputSymbols=symbol, optionType='put', expirationDate=expiry)
         for put in puts:
             strike = float(put['strike_price'])
-            expiration = put['expiration_date']
+            exp = put['expiration_date']
             bid = round(float(put['bid_price']), 1)
             prob = round(float(put['chance_of_profit_short']), 2)
-            optionchain = str(optionchains(symbol, expiration, 'call', strike))
+            optionchain = str(asyncio.run(optionchains(symbol, exp, 'put', strike)))
             cost = quote(symbol) * 100
             prem = bid * 100
             ror = (prem / cost) * 100
             if prob > short_min_prob:
                 if ror > min_ror:
-                    shorts.append(optionchain)
-    graph = dask.delayed()(shorts)
-    computed_list = graph.compute()
-    random_pick = random.choice(computed_list)
-    print(random_pick)
-    end = time.time()
-    total = end - start
-    print(total)
+                    shorts.append((symbol, exp, strike, 'put'))
+        graph = dask.delayed()(shorts)
+        computed_list = graph.compute()
+        if computed_list:
+            rand = random.choice(computed_list)
+            print(rand)
+    # end.options_orders(symbol, 'sell_to_open', symb, 1)
 
 def shortcall(symbol):
     endpoint = Tradier_endpoints()
@@ -158,8 +161,8 @@ def shortcall(symbol):
     expirations = expirationfxn['expirations']['expiration']
 
     shorts = []
-    start = time.time()
     for expiration in expirations:
+        #start = time.time()
         expiry = expiration['date']
         calls = r.options.find_options_by_specific_profitability(inputSymbols=symbol, optionType='call', expirationDate=expiry)
 
@@ -174,13 +177,17 @@ def shortcall(symbol):
             ror = (premium / cost) * 100
             if prob > short_min_prob:
                 if ror > min_ror:
-                    shorts.append(optionchain)
+                    shorts.append((f"{symbol} {exp} {strike} CALL"))
         graph = dask.delayed()(shorts)
         computed_list = graph.compute()
-        print(computed_list)
-        end = time.time()
-        total = end - start
-        print(total)
+        if computed_list:
+            rand = random.choice(computed_list)
+            print(rand)
+            #end = time.time()
+            #total = end - start
+            #print(f"{total} seconds total")
+        else:
+            continue
     #end.options_orders(symbol, 'sell_to_open', symb, 1)
 
 def longcall(symbol):
@@ -194,14 +201,15 @@ def longcall(symbol):
         calls = r.options.find_options_by_specific_profitability(inputSymbols=symbol, optionType='call', expirationDate=expiry)
         for call in calls:
             strike = float(call['strike_price'])
-            expiration = call['expiration_date']
+            exp = call['expiration_date']
             bid = round(float(call['bid_price']), 1)
             lpop = round(float(call['chance_of_profit_long']), 2)
-            ssymb = str(optionchains(symbol, expiration, 'call', strike))
+            ssymb = str(asyncio.run(optionchains(symbol, exp, 'put', strike)))
             prem = bid * 100
             if lpop > long_min_prob:
                 longs.append(ssymb)
-    random_picks = random.choice(longs)
+        print(longs)
+    #random_picks = random.choice(longs)
     #end.options_orders(symbol, 'buy_to_open', symb, 1)
 
 def profitable_options(symbol):

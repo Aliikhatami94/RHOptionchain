@@ -6,3 +6,7 @@ pyotp
 configparser
 functions-framework
 pyspark
+robin_stocks
+requests
+dask
+aiohttp
